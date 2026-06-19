@@ -5,21 +5,16 @@ in Google Cloud Storage.
 Prerequisites:
   - Azure CLI installed and signed in (`az login`)
   - A Fabric connection to GCS already configured in your tenant
+  - PyYAML installed (`pip install pyyaml`)
 
-Subcommands:
-  list-connections  Search for a connection by name to find its GUID.
-  create-shortcut   Create a shortcut to a GCS Iceberg table.
+Usage:
+  # Create shortcuts from a YAML config file
+  python create_lakehouse_shortcut.py shortcuts.yaml
 
-Examples:
   # Find your connection GUID by name
-  python create_lakehouse_shortcut.py list-connections --filter "rk_gcp_iceberg"
+  python create_lakehouse_shortcut.py --list-connections [--filter NAME]
 
-  # Create a shortcut (location auto-detected from connection)
-  python create_lakehouse_shortcut.py create-shortcut \
-    --workspace-id 2e83824d-05b8-40d9-b3ff-0f707dd8e696 \
-    --lakehouse-id a5e3d9b7-787d-4cde-b24e-51ae823acd38 \
-    --connection "rk_gcp_iceberg" \
-    --table-path "consulting/engagement_roles"
+See shortcuts.yaml for the config file format.
 """
 
 import argparse
@@ -27,13 +22,17 @@ import json
 import re
 import subprocess
 import sys
+import time
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+
+import yaml
 
 FABRIC_API_BASE = "https://api.fabric.microsoft.com/v1"
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
+DELAY_BETWEEN_CALLS = 3  # seconds between shortcut creation calls
 
 
 def get_fabric_token() -> str:
@@ -82,7 +81,7 @@ def list_connections(token: str, name_filter: str | None = None) -> list[dict]:
     return connections
 
 
-def resolve_connection_id(connection_ref: str, token: str) -> tuple[str, str | None]:
+def resolve_connection(connection_ref: str, token: str) -> tuple[str, str | None]:
     """
     Resolve a connection reference to a (GUID, location) tuple.
     If it's already a GUID, fetch connection details to get the location.
@@ -98,7 +97,7 @@ def resolve_connection_id(connection_ref: str, token: str) -> tuple[str, str | N
     if not connections:
         print(
             f"ERROR: No connection found matching '{connection_ref}'.\n"
-            "Use 'list-connections' to see available connections.",
+            "Use '--list-connections' to see available connections.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -114,7 +113,6 @@ def resolve_connection_id(connection_ref: str, token: str) -> tuple[str, str | N
     conn_id = match["id"]
     print(f"Resolved connection '{match.get('displayName')}' -> {conn_id}")
 
-    # Fetch full details to get the location/path
     details = fabric_get(f"/connections/{conn_id}", token)
     location = (details.get("connectionDetails") or {}).get("path")
     return conn_id, location
@@ -128,21 +126,22 @@ def create_shortcut(
     table_path: str,
     token: str,
     schema: str = "dbo",
-) -> dict:
-    """Create a GCS shortcut in the Lakehouse Tables section."""
-    # Derive shortcut name from the last path segment
+    overwrite: bool = False,
+) -> dict | None:
+    """
+    Create a GCS shortcut in the Lakehouse Tables section.
+    Returns the response body on success, or None on failure (non-fatal).
+    """
     shortcut_name = table_path.rstrip("/").split("/")[-1]
-
-    # Ensure subpath has a leading slash
     subpath = f"/{table_path.strip('/')}"
-
-    # For schema-enabled lakehouses, place shortcuts under Tables/<schema>
     shortcut_path = f"Tables/{schema}" if schema else "Tables"
 
     url = (
         f"{FABRIC_API_BASE}/workspaces/{workspace_id}"
         f"/items/{lakehouse_id}/shortcuts"
     )
+    if overwrite:
+        url += "?shortcutConflictPolicy=CreateOrOverwrite"
 
     body = {
         "path": shortcut_path,
@@ -156,7 +155,7 @@ def create_shortcut(
         },
     }
 
-    print(f"Creating shortcut '{shortcut_name}' in {shortcut_path} -> {location}{subpath}")
+    print(f"  [{shortcut_name}] {shortcut_path} -> {location}{subpath}", end=" ... ")
 
     req = Request(
         url,
@@ -172,26 +171,23 @@ def create_shortcut(
         with urlopen(req) as resp:
             status = resp.status
             response_body = json.loads(resp.read().decode("utf-8"))
-            action = "Updated" if status == 200 else "Created"
-            print(f"  OK: {action} shortcut '{shortcut_name}' successfully.")
-            print(json.dumps(response_body, indent=2))
+            action = "updated" if status == 200 else "created"
+            print(f"OK ({action})")
             return response_body
     except HTTPError as e:
         error_body = e.read().decode("utf-8")
-        print(
-            f"ERROR: HTTP {e.code} creating shortcut '{shortcut_name}'.\n{error_body}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        print(f"FAILED (HTTP {e.code})")
+        print(f"    {error_body}", file=sys.stderr)
+        return None
 
 
-def cmd_list_connections(args):
-    """Handler for the list-connections subcommand."""
+def cmd_list_connections(name_filter: str | None):
+    """List connections visible to the current user."""
     token = get_fabric_token()
-    connections = list_connections(token, name_filter=args.filter)
+    connections = list_connections(token, name_filter=name_filter)
 
     if not connections:
-        print("No connections found." + (f" (filter: '{args.filter}')" if args.filter else ""))
+        print("No connections found." + (f" (filter: '{name_filter}')" if name_filter else ""))
         return
 
     print(f"{'ID':<38} {'Name':<40} {'Type'}")
@@ -203,80 +199,100 @@ def cmd_list_connections(args):
         print(f"{cid:<38} {name:<40} {ctype}")
 
 
-def cmd_create_shortcut(args):
-    """Handler for the create-shortcut subcommand."""
-    token = get_fabric_token()
-    connection_id, resolved_location = resolve_connection_id(args.connection, token)
+def cmd_create_shortcuts(config_path: str):
+    """Create shortcuts from a YAML config file."""
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
 
-    # Use explicit --location if provided, otherwise use the one from the connection
-    location = args.location or resolved_location
+    workspace_id = config["workspace_id"]
+    lakehouse_id = config["lakehouse_id"]
+    connection_ref = config["connection"]
+    schema = config.get("schema", "dbo")
+    overwrite = config.get("overwrite", False)
+    location_override = config.get("location")
+    table_paths = config.get("table_paths", [])
+
+    if not table_paths:
+        print("No table_paths specified in config file.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Config: {config_path}")
+    print(f"  Workspace:  {workspace_id}")
+    print(f"  Lakehouse:  {lakehouse_id}")
+    print(f"  Schema:     {schema or '(none)'}")
+    print(f"  Overwrite:  {overwrite}")
+    print(f"  Tables:     {len(table_paths)}")
+    print()
+
+    # Single token fetch for all calls
+    token = get_fabric_token()
+    connection_id, resolved_location = resolve_connection(connection_ref, token)
+
+    location = location_override or resolved_location
     if not location:
         print(
             "ERROR: Could not determine bucket location from the connection.\n"
-            "Please provide --location explicitly.",
+            "Add 'location' to the config file.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    create_shortcut(
-        workspace_id=args.workspace_id,
-        lakehouse_id=args.lakehouse_id,
-        connection_id=connection_id,
-        location=location,
-        table_path=args.table_path,
-        token=token,
-        schema=args.schema,
-    )
+    print(f"  Location:   {location}")
+    print()
+
+    succeeded = 0
+    failed = 0
+    for i, table_path in enumerate(table_paths):
+        result = create_shortcut(
+            workspace_id=workspace_id,
+            lakehouse_id=lakehouse_id,
+            connection_id=connection_id,
+            location=location,
+            table_path=table_path,
+            token=token,
+            schema=schema,
+            overwrite=overwrite,
+        )
+        if result is not None:
+            succeeded += 1
+        else:
+            failed += 1
+
+        # Back off between calls (skip after the last one)
+        if i < len(table_paths) - 1:
+            time.sleep(DELAY_BETWEEN_CALLS)
+
+    print()
+    print(f"Done: {succeeded} succeeded, {failed} failed out of {len(table_paths)} total.")
+    if failed > 0:
+        sys.exit(1)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Manage OneLake shortcuts to GCS Iceberg tables in Fabric.",
+        description="Create OneLake shortcuts to GCS Iceberg tables from a YAML config.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="See shortcuts.yaml for config file format.",
     )
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
-
-    # list-connections
-    lc_parser = subparsers.add_parser(
-        "list-connections",
-        help="List available Fabric connections (find your connection GUID).",
+    parser.add_argument(
+        "config", nargs="?", default=None,
+        help="Path to YAML config file (e.g. shortcuts.yaml).",
     )
-    lc_parser.add_argument(
+    parser.add_argument(
+        "--list-connections", action="store_true",
+        help="List available Fabric connections and exit.",
+    )
+    parser.add_argument(
         "--filter", default=None,
-        help="Filter connections by name (case-insensitive substring match).",
-    )
-
-    # create-shortcut
-    cs_parser = subparsers.add_parser(
-        "create-shortcut",
-        help="Create a shortcut to a GCS Iceberg table in a Lakehouse.",
-    )
-    cs_parser.add_argument("--workspace-id", required=True, help="Fabric workspace GUID")
-    cs_parser.add_argument("--lakehouse-id", required=True, help="Lakehouse item GUID")
-    cs_parser.add_argument(
-        "--connection", required=True,
-        help="Connection name or GUID. If a name is given, it will be resolved to a GUID.",
-    )
-    cs_parser.add_argument(
-        "--location", default=None,
-        help="GCS bucket URL override. If omitted, auto-detected from the connection.",
-    )
-    cs_parser.add_argument(
-        "--table-path", required=True,
-        help='Path to the Iceberg table in the bucket, e.g. "consulting/engagement_roles"',
-    )
-    cs_parser.add_argument(
-        "--schema", default="dbo",
-        help='Lakehouse schema to place the shortcut under (default: "dbo"). '
-             'Use --schema "" for non-schema-enabled lakehouses.',
+        help="Filter connections by name (use with --list-connections).",
     )
 
     args = parser.parse_args()
 
-    if args.command == "list-connections":
-        cmd_list_connections(args)
-    elif args.command == "create-shortcut":
-        cmd_create_shortcut(args)
+    if args.list_connections:
+        cmd_list_connections(args.filter)
+    elif args.config:
+        cmd_create_shortcuts(args.config)
     else:
         parser.print_help()
         sys.exit(1)
