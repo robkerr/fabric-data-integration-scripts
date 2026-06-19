@@ -14,20 +14,11 @@ Examples:
   # Find your connection GUID by name
   python create_lakehouse_shortcut.py list-connections --filter "rk_gcp_iceberg"
 
-  # Create a shortcut (using connection name — auto-resolves to GUID)
+  # Create a shortcut (location auto-detected from connection)
   python create_lakehouse_shortcut.py create-shortcut \
     --workspace-id 2e83824d-05b8-40d9-b3ff-0f707dd8e696 \
     --lakehouse-id a5e3d9b7-787d-4cde-b24e-51ae823acd38 \
     --connection "rk_gcp_iceberg" \
-    --location "https://storage.googleapis.com/my-bucket" \
-    --table-path "consulting/engagement_roles"
-
-  # Or use the connection GUID directly
-  python create_lakehouse_shortcut.py create-shortcut \
-    --workspace-id 2e83824d-05b8-40d9-b3ff-0f707dd8e696 \
-    --lakehouse-id a5e3d9b7-787d-4cde-b24e-51ae823acd38 \
-    --connection 3c976446-0bda-472e-8800-f1d6e4f162dc \
-    --location "https://storage.googleapis.com/my-bucket" \
     --table-path "consulting/engagement_roles"
 """
 
@@ -48,9 +39,10 @@ UUID_PATTERN = re.compile(
 def get_fabric_token() -> str:
     """Acquire a bearer token for the Fabric API using the Azure CLI."""
     result = subprocess.run(
-        ["az", "account", "get-access-token", "--resource", "https://api.fabric.microsoft.com"],
+        "az account get-access-token --resource https://api.fabric.microsoft.com",
         capture_output=True,
         text=True,
+        shell=True,
     )
     if result.returncode != 0:
         print(f"ERROR: Failed to get access token.\n{result.stderr}", file=sys.stderr)
@@ -84,20 +76,22 @@ def list_connections(token: str, name_filter: str | None = None) -> list[dict]:
         name_filter_lower = name_filter.lower()
         connections = [
             c for c in connections
-            if name_filter_lower in c.get("displayName", "").lower()
+            if name_filter_lower in (c.get("displayName") or "").lower()
         ]
 
     return connections
 
 
-def resolve_connection_id(connection_ref: str, token: str) -> str:
+def resolve_connection_id(connection_ref: str, token: str) -> tuple[str, str | None]:
     """
-    Resolve a connection reference to a GUID.
-    If it's already a GUID, return it directly.
-    Otherwise, search by name and return the matching connection ID.
+    Resolve a connection reference to a (GUID, location) tuple.
+    If it's already a GUID, fetch connection details to get the location.
+    Otherwise, search by name, return the matching connection ID and location.
     """
     if UUID_PATTERN.match(connection_ref):
-        return connection_ref
+        details = fabric_get(f"/connections/{connection_ref}", token)
+        location = (details.get("connectionDetails") or {}).get("path")
+        return connection_ref, location
 
     connections = list_connections(token, name_filter=connection_ref)
 
@@ -112,13 +106,18 @@ def resolve_connection_id(connection_ref: str, token: str) -> str:
     if len(connections) > 1:
         print(f"Multiple connections match '{connection_ref}':", file=sys.stderr)
         for c in connections:
-            print(f"  {c['id']}  {c.get('displayName', '(unnamed)')}", file=sys.stderr)
+            print(f"  {c['id']}  {c.get('displayName') or '(unnamed)'}", file=sys.stderr)
         print("\nPlease use the full GUID or a more specific name.", file=sys.stderr)
         sys.exit(1)
 
     match = connections[0]
-    print(f"Resolved connection '{match.get('displayName')}' -> {match['id']}")
-    return match["id"]
+    conn_id = match["id"]
+    print(f"Resolved connection '{match.get('displayName')}' -> {conn_id}")
+
+    # Fetch full details to get the location/path
+    details = fabric_get(f"/connections/{conn_id}", token)
+    location = (details.get("connectionDetails") or {}).get("path")
+    return conn_id, location
 
 
 def create_shortcut(
@@ -170,7 +169,7 @@ def create_shortcut(
             status = resp.status
             response_body = json.loads(resp.read().decode("utf-8"))
             action = "Updated" if status == 200 else "Created"
-            print(f"  ✓ {action} shortcut '{shortcut_name}' successfully.")
+            print(f"  OK: {action} shortcut '{shortcut_name}' successfully.")
             print(json.dumps(response_body, indent=2))
             return response_body
     except HTTPError as e:
@@ -192,10 +191,10 @@ def cmd_list_connections(args):
         return
 
     print(f"{'ID':<38} {'Name':<40} {'Type'}")
-    print(f"{'─' * 38} {'─' * 40} {'─' * 20}")
+    print(f"{'-' * 38} {'-' * 40} {'-' * 20}")
     for c in connections:
         cid = c.get("id", "")
-        name = c.get("displayName", "(unnamed)")
+        name = c.get("displayName") or "(unnamed)"
         ctype = c.get("connectivityType", c.get("type", ""))
         print(f"{cid:<38} {name:<40} {ctype}")
 
@@ -203,13 +202,23 @@ def cmd_list_connections(args):
 def cmd_create_shortcut(args):
     """Handler for the create-shortcut subcommand."""
     token = get_fabric_token()
-    connection_id = resolve_connection_id(args.connection, token)
+    connection_id, resolved_location = resolve_connection_id(args.connection, token)
+
+    # Use explicit --location if provided, otherwise use the one from the connection
+    location = args.location or resolved_location
+    if not location:
+        print(
+            "ERROR: Could not determine bucket location from the connection.\n"
+            "Please provide --location explicitly.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     create_shortcut(
         workspace_id=args.workspace_id,
         lakehouse_id=args.lakehouse_id,
         connection_id=connection_id,
-        location=args.location,
+        location=location,
         table_path=args.table_path,
         token=token,
     )
@@ -244,8 +253,8 @@ def main():
         help="Connection name or GUID. If a name is given, it will be resolved to a GUID.",
     )
     cs_parser.add_argument(
-        "--location", required=True,
-        help="GCS bucket URL, e.g. https://storage.googleapis.com/my-bucket",
+        "--location", default=None,
+        help="GCS bucket URL override. If omitted, auto-detected from the connection.",
     )
     cs_parser.add_argument(
         "--table-path", required=True,
