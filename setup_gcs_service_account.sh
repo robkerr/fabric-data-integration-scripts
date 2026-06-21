@@ -51,31 +51,39 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
   --role="roles/storage.objectAdmin"
 
 echo ""
-echo "=== Generating key file: ${KEY_FILE} ==="
-gcloud iam service-accounts keys create "${KEY_FILE}" \
-  --iam-account="${SA_EMAIL}"
+echo "=== Generating HMAC key for Fabric (S3-compatible access) ==="
+HMAC_OUTPUT=$(gcloud storage hmac create "${SA_EMAIL}" --format=json)
 
-# Add the GCS bucket URL to the key file for Fabric connection setup
-TEMP_KEY=$(mktemp)
+HMAC_ACCESS_ID=$(echo "${HMAC_OUTPUT}" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['metadata']['accessId'])")
+HMAC_SECRET=$(echo "${HMAC_OUTPUT}" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['secret'])")
+
+# Write Fabric connection details to key file
 python3 -c "
-import json, sys
-with open('${KEY_FILE}') as f:
-    data = json.load(f)
-data['gcs_bucket_url'] = 'gs://${BUCKET_NAME}'
+import json
+data = {
+    'service_account': '${SA_EMAIL}',
+    'hmac_access_id': '${HMAC_ACCESS_ID}',
+    'hmac_secret': '${HMAC_SECRET}',
+    'gcs_endpoint_url': 'https://storage.googleapis.com',
+    'gcs_bucket': '${BUCKET_NAME}'
+}
 with open('${KEY_FILE}', 'w') as f:
     json.dump(data, f, indent=2)
+print('  HMAC Access ID: ${HMAC_ACCESS_ID}')
 "
 
 echo ""
 echo "=== Done ==="
 echo ""
-echo "Service account: ${SA_EMAIL}"
-echo "Key file:        ${KEY_FILE}"
+echo "Service account:  ${SA_EMAIL}"
+echo "Key file:         ${KEY_FILE}"
+echo ""
+echo "Fabric connection details (also saved in ${KEY_FILE}):"
+echo "  Endpoint URL:   https://storage.googleapis.com"
+echo "  Access Key ID:  ${HMAC_ACCESS_ID}"
+echo "  Secret:         (see ${KEY_FILE})"
+echo "  Bucket:         ${BUCKET_NAME}"
 echo ""
 echo "Next steps:"
-echo "  1. Use ${KEY_FILE} to configure a GCS connection in Microsoft Fabric"
+echo "  1. Use these HMAC credentials to configure a GCS connection in Microsoft Fabric"
 echo "  2. Keep the key file secure and do NOT commit it to source control"
-echo ""
-echo "To verify access:"
-echo "  gcloud auth activate-service-account --key-file=${KEY_FILE}"
-echo "  gcloud storage ls gs://${BUCKET_NAME}/"
