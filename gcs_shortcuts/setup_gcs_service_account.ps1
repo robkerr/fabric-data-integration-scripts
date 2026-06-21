@@ -64,8 +64,7 @@ $KeyData = @{
     service_account   = $SaEmail
     hmac_access_id    = $HmacAccessId
     hmac_secret       = $HmacSecret
-    gcs_connection_url = $GcsUrl
-    gcs_bucket        = $BucketName
+    gcs_endpoint_url  = $GcsUrl
 }
 $KeyData | ConvertTo-Json -Depth 3 | Set-Content -Path $KeyFile -Encoding UTF8
 Write-Host "  HMAC Access ID: $HmacAccessId"

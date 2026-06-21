@@ -65,8 +65,7 @@ data = {
     'service_account': '${SA_EMAIL}',
     'hmac_access_id': '${HMAC_ACCESS_ID}',
     'hmac_secret': '${HMAC_SECRET}',
-    'gcs_connection_url': '${GCS_URL}',
-    'gcs_bucket': '${BUCKET_NAME}'
+    'gcs_endpoint_url': '${GCS_URL}'
 }
 with open('${KEY_FILE}', 'w') as f:
     json.dump(data, f, indent=2)
