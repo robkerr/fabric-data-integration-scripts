@@ -58,13 +58,14 @@ HMAC_ACCESS_ID=$(echo "${HMAC_OUTPUT}" | python3 -c "import json,sys; d=json.loa
 HMAC_SECRET=$(echo "${HMAC_OUTPUT}" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['secret'])")
 
 # Write Fabric connection details to key file
+GCS_URL="https://${BUCKET_NAME}.storage.googleapis.com"
 python3 -c "
 import json
 data = {
     'service_account': '${SA_EMAIL}',
     'hmac_access_id': '${HMAC_ACCESS_ID}',
     'hmac_secret': '${HMAC_SECRET}',
-    'gcs_endpoint_url': 'https://storage.googleapis.com',
+    'gcs_connection_url': '${GCS_URL}',
     'gcs_bucket': '${BUCKET_NAME}'
 }
 with open('${KEY_FILE}', 'w') as f:
@@ -79,7 +80,7 @@ echo "Service account:  ${SA_EMAIL}"
 echo "Key file:         ${KEY_FILE}"
 echo ""
 echo "Fabric connection details (also saved in ${KEY_FILE}):"
-echo "  Endpoint URL:   https://storage.googleapis.com"
+echo "  Connection URL: ${GCS_URL}"
 echo "  Access Key ID:  ${HMAC_ACCESS_ID}"
 echo "  Secret:         (see ${KEY_FILE})"
 echo "  Bucket:         ${BUCKET_NAME}"
