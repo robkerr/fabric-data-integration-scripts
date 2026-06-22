@@ -14,7 +14,7 @@
 #   - gcloud CLI installed and authenticated (`gcloud auth login`)
 #
 # Example:
-#   .\remove_gcs_service_account.sh gen-lang-client-0875336337 rk-gcp-iceberg svc-fabric-kerr
+#   ./remove_gcs_service_account.sh gen-lang-client-0875336337 rk-gcp-iceberg svc-fabric-kerr
 #
 
 
