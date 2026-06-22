@@ -13,7 +13,7 @@
 #   - gcloud CLI installed and authenticated (`gcloud auth login`)
 #
 # Example:
-#   .\setup_gcs_service_account.ps1 gen-lang-client-0875336337 rk-gcp-iceberg svc-fabric-kerr
+#   ./setup_gcs_service_account.ps1 gen-lang-client-0875336337 rk-gcp-iceberg svc-fabric-kerr
 #
 
 

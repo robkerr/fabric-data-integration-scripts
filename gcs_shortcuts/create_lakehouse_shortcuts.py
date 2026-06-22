@@ -42,6 +42,8 @@ UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
 DELAY_BETWEEN_CALLS = 3  # seconds between shortcut creation calls
+MAX_RETRIES = 3  # max attempts per shortcut (1 initial + retries)
+RETRY_DELAY = 10  # seconds to wait before retrying a failed shortcut
 
 
 def get_fabric_token() -> str:
@@ -147,6 +149,7 @@ def discover_iceberg_tables(gcs_bucket: str, gcs_prefix: str) -> list[str]:
         ["gcloud", "storage", "ls", scan_url],
         capture_output=True,
         text=True,
+        shell=True,
     )
     if result.returncode != 0:
         print(f"ERROR: Failed to list GCS path: {scan_url}\n{result.stderr}", file=sys.stderr)
@@ -167,6 +170,7 @@ def discover_iceberg_tables(gcs_bucket: str, gcs_prefix: str) -> list[str]:
             ["gcloud", "storage", "ls", metadata_path],
             capture_output=True,
             text=True,
+            shell=True,
         )
         if check.returncode == 0 and check.stdout.strip():
             # Extract the relative table path from the full gs:// URL
@@ -338,6 +342,8 @@ def cmd_create_shortcuts(config_path: str):
 
     succeeded = 0
     failed = 0
+    failed_tables = []
+
     for i, table_path in enumerate(table_paths):
         result = create_shortcut(
             workspace_id=workspace_id,
@@ -352,12 +358,38 @@ def cmd_create_shortcuts(config_path: str):
         if result is not None:
             succeeded += 1
         else:
-            failed += 1
+            failed_tables.append(table_path)
 
         # Back off between calls (skip after the last one)
         if i < len(table_paths) - 1:
             time.sleep(DELAY_BETWEEN_CALLS)
 
+    # Retry failed shortcuts with increasing backoff
+    for attempt in range(1, MAX_RETRIES + 1):
+        if not failed_tables:
+            break
+        print(f"\n  Retrying {len(failed_tables)} failed shortcut(s) (attempt {attempt}/{MAX_RETRIES})...")
+        time.sleep(RETRY_DELAY * attempt)
+        still_failed = []
+        for table_path in failed_tables:
+            result = create_shortcut(
+                workspace_id=workspace_id,
+                lakehouse_id=lakehouse_id,
+                connection_id=connection_id,
+                location=location,
+                table_path=table_path,
+                token=token,
+                schema=schema,
+                overwrite=overwrite,
+            )
+            if result is not None:
+                succeeded += 1
+            else:
+                still_failed.append(table_path)
+            time.sleep(DELAY_BETWEEN_CALLS)
+        failed_tables = still_failed
+
+    failed = len(failed_tables)
     print()
     print(f"Done: {succeeded} succeeded, {failed} failed out of {len(table_paths)} total.")
     if failed > 0:
