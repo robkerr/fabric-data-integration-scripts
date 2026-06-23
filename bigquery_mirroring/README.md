@@ -5,7 +5,7 @@ This folder contains scripts to automate the setup of Microsoft Fabric **databas
 ## How it works
 
 ```
-Google BigQuery dataset (nyc_taxi)
+Google BigQuery dataset (your-dataset)
         │
         │  CDC via change history + BigQuery Storage Read API
         │  Staging export to GCS bucket
@@ -37,7 +37,7 @@ Run the setup script to create a service account with minimal permissions, creat
 ./setup_bigquery_service_account.sh <PROJECT_ID> <DATASET_ID> <SERVICE_ACCOUNT_NAME>
 
 # Example
-./setup_bigquery_service_account.sh gen-lang-client-0875336337 nyc_taxi svc-fabric-bq-mirror
+./setup_bigquery_service_account.sh your-project-name your-dataset svc-fabric-bq-mirror
 ```
 
 The script outputs a summary of everything you need for Step 2:
@@ -47,12 +47,12 @@ The script outputs a summary of everything you need for Step 2:
  Setup complete — Fabric connection parameters
 ================================================================
 
- GCP Project ID:          gen-lang-client-0875336337
- BigQuery Dataset:        nyc_taxi
+ GCP Project ID:          your-project-name
+ BigQuery Dataset:        your-dataset
  Dataset Location:        us-central1
- Service Account Email:   svc-fabric-bq-mirror@gen-lang-client-0875336337.iam.gserviceaccount.com
+ Service Account Email:   svc-fabric-bq-mirror@your-project-name.iam.gserviceaccount.com
  JSON Key File:           svc-fabric-bq-mirror-key.json
- GCS Staging Bucket:      gen-lang-client-0875336337_fabric_staging_bucket
+ GCS Staging Bucket:      your-project-name_fabric_staging_bucket
 
  To configure the Google BigQuery connection in Fabric:
    1. Go to your Fabric workspace > Settings > Connections
@@ -67,14 +67,14 @@ The script outputs a summary of everything you need for Step 2:
 1. In the Fabric portal, go to your workspace → **Settings → Manage connections and gateways → New connection**
 2. Choose **Google BigQuery**
 3. Enter the **Service Account Email** and paste the full contents of the JSON key file generated in Step 1
-4. Give the connection a name (e.g. `rk-bigquery-nyc-taxi`) — you'll reference this when creating the mirrored database
+4. Give the connection a name (e.g. `my-bigquery-connection`) — you'll reference this when creating the mirrored database
 
 ### Step 3 — Create the Mirrored Database in Fabric (manual, one-time)
 
 1. In your Fabric workspace, select **New → Mirrored Google BigQuery**
 2. Select the connection you created in Step 2
-3. Choose the GCP project (`gen-lang-client-0875336337`) and dataset (`nyc_taxi`)
-4. Name the mirrored database (e.g. `bq_nyc_taxi`) and click **Create**
+3. Choose your GCP project and dataset
+4. Name the mirrored database and click **Create**
 
 > Fabric creates two items in your workspace: a **MirroredDatabase** item and a companion **SQLEndpoint**. They share the same display name. You need the **MirroredDatabase** ID (not the SQLEndpoint ID) for the next step.
 
@@ -87,7 +87,7 @@ Find the IDs you need using the helper commands:
 ./run.sh --list-mirrored-databases --workspace <WORKSPACE_ID>
 
 # Find your connection GUID (optional — name works too)
-./run.sh --list-connections --filter rk-bigquery
+./run.sh --list-connections --filter <your-connection-name>
 ```
 
 Edit `mirroring.yaml`:
@@ -95,7 +95,7 @@ Edit `mirroring.yaml`:
 ```yaml
 workspace_id: "your-workspace-id"
 mirrored_database_id: "mirrored-database-item-id"   # from --list-mirrored-databases
-connection: "rk-bigquery-nyc-taxi"                  # connection name or GUID from Step 2
+connection: "your-connection-name"                  # connection name or GUID from Step 2
 ```
 
 ### Step 5 — Start mirroring and monitor status
@@ -115,8 +115,8 @@ Mirroring status: ✓ Running
 
   Schema               Table                          Status               Rows  Last Sync
   -------------------- ------------------------------ --------------- ------------ -------------------------
-  nyc_taxi             taxi_zone_lookup               Replicating             265  2026-06-23 20:39:15
-  nyc_taxi             taxi_trips                     Replicating      44,417,596  2026-06-23 20:39:30
+  your-dataset         table_one                      Replicating             265  2026-06-23 20:39:15
+  your-dataset         table_two                      Replicating      44,417,596  2026-06-23 20:39:30
 ```
 
 ## Stopping mirroring
@@ -131,10 +131,10 @@ To remove the service account and clean up GCP resources:
 
 ```bash
 # Remove service account only
-./remove_bigquery_service_account.sh gen-lang-client-0875336337 svc-fabric-bq-mirror
+./remove_bigquery_service_account.sh your-project-name svc-fabric-bq-mirror
 
 # Also delete the GCS staging bucket (prompts for confirmation)
-./remove_bigquery_service_account.sh gen-lang-client-0875336337 svc-fabric-bq-mirror --delete-bucket
+./remove_bigquery_service_account.sh your-project-name svc-fabric-bq-mirror --delete-bucket
 ```
 
 Delete the Mirrored Database item from the Fabric portal manually.
