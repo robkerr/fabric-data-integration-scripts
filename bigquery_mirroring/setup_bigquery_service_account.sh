@@ -66,9 +66,10 @@ gcloud iam service-accounts create "${SA_NAME}" \
 echo ""
 echo "=== Creating custom IAM role: ${CUSTOM_ROLE_ID} ==="
 
-# Check if role already exists at project level
-ROLE_EXISTS=$(gcloud iam roles list --project="${PROJECT_ID}" --format="value(name)" \
-  --filter="name:projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID}" 2>/dev/null | wc -l | tr -d ' ')
+# Check role state: active, soft-deleted, or absent
+# `gcloud iam roles list` omits soft-deleted roles; use `describe` to detect them
+ROLE_FULL_NAME="projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID}"
+ROLE_STATE=$(gcloud iam roles describe "${ROLE_FULL_NAME}" --format="value(deleted)" 2>/dev/null || echo "NOT_FOUND")
 
 ROLE_YAML=$(cat <<YAML
 title: "Fabric BigQuery Mirror"
@@ -105,17 +106,29 @@ YAML
 ROLE_FILE=$(mktemp /tmp/fabric-bq-role-XXXXXX.yaml)
 echo "${ROLE_YAML}" > "${ROLE_FILE}"
 
-if [ "${ROLE_EXISTS}" -gt 0 ]; then
+if [ "${ROLE_STATE}" = "True" ]; then
+  # Role exists but is soft-deleted (within GCP's 7-day retention window).
+  # Undelete it first, then apply the latest permissions via update.
+  echo "  Role is soft-deleted — undeleting..."
+  gcloud iam roles undelete "${CUSTOM_ROLE_ID}" --project="${PROJECT_ID}" --quiet
+  echo "  Updating role permissions..."
   gcloud iam roles update "${CUSTOM_ROLE_ID}" \
     --project="${PROJECT_ID}" \
     --file="${ROLE_FILE}" \
-    2>/dev/null || echo "  (Role update skipped — may already be up to date)"
-  echo "  Updated existing role."
-else
+    2>/dev/null || echo "  (Role update skipped — already up to date)"
+  echo "  Role restored and updated."
+elif [ "${ROLE_STATE}" = "NOT_FOUND" ]; then
   gcloud iam roles create "${CUSTOM_ROLE_ID}" \
     --project="${PROJECT_ID}" \
     --file="${ROLE_FILE}"
   echo "  Created new role."
+else
+  # Role exists and is active — just update permissions
+  gcloud iam roles update "${CUSTOM_ROLE_ID}" \
+    --project="${PROJECT_ID}" \
+    --file="${ROLE_FILE}" \
+    2>/dev/null || echo "  (Role update skipped — already up to date)"
+  echo "  Updated existing role."
 fi
 rm -f "${ROLE_FILE}"
 
