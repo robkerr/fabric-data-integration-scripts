@@ -1,0 +1,27 @@
+# Configuration for managing Fabric mirroring of a Google BigQuery dataset.
+#
+# Usage:
+#   python setup_bigquery_mirror.py mirroring.yaml           # start mirroring + show status
+#   python setup_bigquery_mirror.py mirroring.yaml --status  # check status only
+#   python setup_bigquery_mirror.py mirroring.yaml --stop    # stop mirroring
+#   python setup_bigquery_mirror.py --list-connections [--filter NAME]
+#   python setup_bigquery_mirror.py --list-mirrored-databases --workspace <WORKSPACE_ID>
+
+# Target Fabric workspace containing the Mirrored Database item.
+# Create a dedicated workspace (not "My workspace") in the Fabric portal.
+workspace_id: "REPLACE_WITH_WORKSPACE_ID"
+
+# The ID of the Mirrored Google BigQuery item in Fabric.
+# After creating it in the UI (New > Mirrored Google BigQuery), find the ID
+# in the browser URL:  .../groups/<workspace_id>/mirroreddatabases/<mirrored_database_id>
+# Or run:  python setup_bigquery_mirror.py --list-mirrored-databases --workspace <WORKSPACE_ID>
+mirrored_database_id: "REPLACE_WITH_MIRRORED_DATABASE_ID"
+
+# The Fabric connection to Google BigQuery.
+# Either the display name or the GUID of the connection.
+# To find it:  python setup_bigquery_mirror.py --list-connections --filter BigQuery
+connection: "REPLACE_WITH_CONNECTION_NAME_OR_GUID"
+
+# --- Source BigQuery details (informational / used in status output) ---
+gcp_project_id: "gen-lang-client-0875336337"
+bigquery_dataset: "nyc_taxi"
