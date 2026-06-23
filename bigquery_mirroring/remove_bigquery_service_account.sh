@@ -3,40 +3,51 @@
 # This is the teardown counterpart for the Fabric BigQuery mirroring setup.
 #
 # Usage:
-#   ./remove_bigquery_service_account.sh <PROJECT_ID> <SERVICE_ACCOUNT_NAME> [--delete-bucket]
+#   ./remove_bigquery_service_account.sh <PROJECT_ID> <SERVICE_ACCOUNT_NAME> [OPTIONS]
+#
+# Options:
+#   --delete-bucket   Also delete the GCS staging bucket (prompts for confirmation)
+#   --delete-role     Also delete the shared FabricBigQueryMirror custom IAM role.
+#                     Only use this if no other service accounts are using the role.
 #
 # This will:
 #   1. Remove the custom IAM role binding from the project
-#   2. Delete all keys for the service account
-#   3. Delete the service account itself
-#   4. Optionally delete the GCS staging bucket (pass --delete-bucket)
+#   2. Delete the service account (also revokes all its keys)
+#   3. Optionally delete the GCS staging bucket (--delete-bucket)
+#   4. Optionally delete the custom IAM role (--delete-role)
 #   5. Delete the local JSON key file if present
 #
 # Prerequisites:
 #   - gcloud CLI installed and authenticated (`gcloud auth login`)
 #
-# Example:
-#   ./remove_bigquery_service_account.sh gen-lang-client-0875336337 svc-fabric-bq-mirror
-#   ./remove_bigquery_service_account.sh gen-lang-client-0875336337 svc-fabric-bq-mirror --delete-bucket
+# Example — remove service account only:
+#   ./remove_bigquery_service_account.sh my-project svc-fabric-bq-mirror
+#
+# Example — full teardown (bucket + role):
+#   ./remove_bigquery_service_account.sh my-project svc-fabric-bq-mirror --delete-bucket --delete-role
 
 set -euo pipefail
 
 DELETE_BUCKET=false
+DELETE_ROLE=false
 POSITIONAL=()
 
 for arg in "$@"; do
   case "${arg}" in
     --delete-bucket) DELETE_BUCKET=true ;;
+    --delete-role)   DELETE_ROLE=true ;;
     *) POSITIONAL+=("${arg}") ;;
   esac
 done
 
 if [ "${#POSITIONAL[@]}" -lt 2 ]; then
-  echo "Usage: $0 <PROJECT_ID> <SERVICE_ACCOUNT_NAME> [--delete-bucket]"
+  echo "Usage: $0 <PROJECT_ID> <SERVICE_ACCOUNT_NAME> [--delete-bucket] [--delete-role]"
   echo ""
   echo "  PROJECT_ID           - Your GCP project ID"
   echo "  SERVICE_ACCOUNT_NAME - Name of the service account to remove"
   echo "  --delete-bucket      - Also delete the GCS staging bucket"
+  echo "  --delete-role        - Also delete the shared FabricBigQueryMirror IAM role"
+  echo "                         (only if no other service accounts are using it)"
   exit 1
 fi
 
@@ -83,7 +94,23 @@ else
   echo "  (Pass --delete-bucket to also remove gs://${STAGING_BUCKET})"
 fi
 
-# ── 4. Remove local key file ─────────────────────────────────────────────────
+# ── 4. Optionally delete the shared custom IAM role ──────────────────────────
+if [ "${DELETE_ROLE}" = true ]; then
+  echo ""
+  echo "=== Deleting custom IAM role: projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID} ==="
+  echo "  NOTE: Only do this if no other service accounts are using this role."
+  gcloud iam roles delete "${CUSTOM_ROLE_ID}" --project="${PROJECT_ID}" \
+    2>/dev/null && echo "  Role deleted." || echo "  (Role not found or already deleted.)"
+else
+  echo ""
+  echo "=== Skipping custom IAM role deletion ==="
+  echo "  The role 'projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID}' is shared and"
+  echo "  not deleted by default (other service accounts may be using it)."
+  echo "  To delete it when no longer needed:"
+  echo "    gcloud iam roles delete ${CUSTOM_ROLE_ID} --project=${PROJECT_ID}"
+fi
+
+# ── 5. Remove local key file ─────────────────────────────────────────────────
 echo ""
 if [ -f "${KEY_FILE}" ]; then
   echo "=== Removing local key file: ${KEY_FILE} ==="
@@ -95,7 +122,3 @@ fi
 
 echo ""
 echo "=== Done ==="
-echo ""
-echo "Note: The custom IAM role 'projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID}'"
-echo "  still exists. To delete it:"
-echo "  gcloud iam roles delete ${CUSTOM_ROLE_ID} --project=${PROJECT_ID}"

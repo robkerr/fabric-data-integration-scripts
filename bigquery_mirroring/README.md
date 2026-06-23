@@ -135,9 +135,12 @@ To remove the service account and clean up GCP resources:
 
 # Also delete the GCS staging bucket (prompts for confirmation)
 ./remove_bigquery_service_account.sh your-project-name svc-fabric-bq-mirror --delete-bucket
+
+# Full teardown — also delete the custom IAM role
+./remove_bigquery_service_account.sh your-project-name svc-fabric-bq-mirror --delete-bucket --delete-role
 ```
 
-Delete the Mirrored Database item from the Fabric portal manually.
+> **Note on the custom IAM role:** The `FabricBigQueryMirror` role is a shared project-level resource. It is not deleted by default because multiple service accounts (e.g. one per dataset) can reuse it. Pass `--delete-role` only when you're sure no other service accounts in the project are using it.
 
 ## File reference
 
