@@ -126,9 +126,10 @@ def list_mirrored_databases(workspace_id: str, token: str) -> list[dict]:
 def get_mirroring_status(workspace_id: str, db_id: str, token: str) -> dict:
     """Return the overall mirroring status for a mirrored database."""
     data = fabric_request(
-        "GET",
-        f"/workspaces/{workspace_id}/mirroredDatabases/{db_id}/mirroringStatus",
+        "POST",
+        f"/workspaces/{workspace_id}/mirroredDatabases/{db_id}/getMirroringStatus",
         token,
+        body={},
     )
     return data or {}
 
@@ -164,14 +165,16 @@ def print_mirroring_status(workspace_id: str, db_id: str, token: str) -> str:
 
     tables = get_tables_status(workspace_id, db_id, token)
     if tables:
-        print(f"\n  {'Schema':<20} {'Table':<30} {'Status':<15} {'Processed Rows'}")
-        print(f"  {'-'*20} {'-'*30} {'-'*15} {'-'*15}")
+        print(f"\n  {'Schema':<20} {'Table':<30} {'Status':<15} {'Rows':>12} {'Last Sync'}")
+        print(f"  {'-'*20} {'-'*30} {'-'*15} {'-'*12} {'-'*25}")
         for t in tables:
             schema = t.get("sourceSchemaName", "")
             table = t.get("sourceTableName", "")
             tstatus = t.get("status", "")
-            rows = t.get("processedBytes", "")
-            print(f"  {schema:<20} {table:<30} {tstatus:<15} {rows}")
+            metrics = t.get("metrics", {})
+            rows = f"{metrics.get('processedRows', ''):,}" if metrics.get("processedRows") is not None else "-"
+            last_sync = (metrics.get("lastSyncDateTime") or "-")[:19].replace("T", " ")
+            print(f"  {schema:<20} {table:<30} {tstatus:<15} {rows:>12}  {last_sync}")
     else:
         print("  (No per-table status available yet)")
 
