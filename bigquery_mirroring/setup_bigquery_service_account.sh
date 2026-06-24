@@ -66,9 +66,23 @@ gcloud iam service-accounts create "${SA_NAME}" \
 echo ""
 echo "=== Creating custom IAM role: ${CUSTOM_ROLE_ID} ==="
 
-# Check if role already exists at project level
-ROLE_EXISTS=$(gcloud iam roles list --project="${PROJECT_ID}" --format="value(name)" \
-  --filter="name:projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID}" 2>/dev/null | wc -l | tr -d ' ')
+# Check role state: active, soft-deleted, or absent.
+# Use --show-deleted because `describe` returns an error for soft-deleted roles,
+# making it impossible to distinguish "deleted" from "never existed".
+ROLE_FULL_NAME="projects/${PROJECT_ID}/roles/${CUSTOM_ROLE_ID}"
+ROLE_CSV=$(gcloud iam roles list --project="${PROJECT_ID}" \
+  --show-deleted \
+  --filter="name=${ROLE_FULL_NAME}" \
+  --format="csv[no-heading](name,deleted)" 2>/dev/null)
+# ROLE_CSV is empty if role doesn't exist, otherwise "name," (active) or "name,True" (soft-deleted)
+
+if [ -z "${ROLE_CSV}" ]; then
+  ROLE_STATE="NOT_FOUND"
+elif echo "${ROLE_CSV}" | grep -q ",True"; then
+  ROLE_STATE="DELETED"
+else
+  ROLE_STATE="ACTIVE"
+fi
 
 ROLE_YAML=$(cat <<YAML
 title: "Fabric BigQuery Mirror"
@@ -105,17 +119,30 @@ YAML
 ROLE_FILE=$(mktemp /tmp/fabric-bq-role-XXXXXX.yaml)
 echo "${ROLE_YAML}" > "${ROLE_FILE}"
 
-if [ "${ROLE_EXISTS}" -gt 0 ]; then
+if [ "${ROLE_STATE}" = "DELETED" ]; then
+  echo "  Role is soft-deleted — undeleting..."
+  gcloud iam roles undelete "${CUSTOM_ROLE_ID}" --project="${PROJECT_ID}" --quiet
+  echo "  Updating role permissions..."
   gcloud iam roles update "${CUSTOM_ROLE_ID}" \
     --project="${PROJECT_ID}" \
     --file="${ROLE_FILE}" \
-    2>/dev/null || echo "  (Role update skipped — may already be up to date)"
-  echo "  Updated existing role."
-else
+    --quiet \
+    2>/dev/null || echo "  (Role update skipped — already up to date)"
+  echo "  Role restored and updated."
+elif [ "${ROLE_STATE}" = "NOT_FOUND" ]; then
   gcloud iam roles create "${CUSTOM_ROLE_ID}" \
     --project="${PROJECT_ID}" \
-    --file="${ROLE_FILE}"
+    --file="${ROLE_FILE}" \
+    --quiet
   echo "  Created new role."
+else
+  # Role exists and is active — just update permissions
+  gcloud iam roles update "${CUSTOM_ROLE_ID}" \
+    --project="${PROJECT_ID}" \
+    --file="${ROLE_FILE}" \
+    --quiet \
+    2>/dev/null || echo "  (Role update skipped — already up to date)"
+  echo "  Updated existing role."
 fi
 rm -f "${ROLE_FILE}"
 
